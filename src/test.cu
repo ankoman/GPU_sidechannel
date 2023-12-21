@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include "hdf5.h"
+#include <hdf5.h>
 
 __global__ void helloFromGPU(){
     printf("Hello World rom GPU!\n");

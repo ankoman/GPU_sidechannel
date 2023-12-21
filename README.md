@@ -3,4 +3,4 @@
 
 # Requirements
 ### hdf5
-hdf5-1.14.3
+sudo apt install libhdf5-de
