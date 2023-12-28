@@ -5,3 +5,6 @@
 !/src/
 !/inc/
 !/lib/
+!/script/
+!/.vscode/
+!my_ASCAD.h5

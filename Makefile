@@ -1,7 +1,10 @@
 CXX=g++
 NVCC=/usr/local/cuda-11.8/bin/nvcc
 INCLUDE_DIR=/usr/include/hdf5/serial/
-NVCCFLAGS=-I$(INCLUDE_DIR)
+LIBRARY_DIR=/usr/lib/x86_64-linux-gnu/hdf5/serial/
+LIBS=-lhdf5 -lhdf5_cpp
+CXXFLAGS=-g
+NVCCFLAGS=-g -I$(INCLUDE_DIR) -L$(LIBRARY_DIR) $(LIBS)
 #LD_LIBRARY_PATH=$(shell printenc LD_LIBRARY_PATH):/usr/local/cuda-11.8/lib64/
 SRCDIR=src
 SRCS=$(wildcard $(SRCDIR)/*.cu)
