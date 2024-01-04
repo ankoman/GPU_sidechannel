@@ -1,7 +1,9 @@
-#include <stdio.h>
+#include<stdio.h>
 #include<H5Cpp.h>
 
 #define KEY_HYPOTHESIS 256
+#define NUM_TRACES 1000
+#define BLOCKSIZE 32
 
 typedef struct ascad_metadata {
     unsigned char plaintext[16];
@@ -33,8 +35,172 @@ __global__ void create_model(uint8_t *d_model, uint8_t *d_plaintexts){
     
     int ix = blockIdx.x * blockDim.x + threadIdx.x;
     int iy = blockIdx.y * blockDim.y + threadIdx.y;
-    int idx = iy * KEY_HYPOTHESIS + ix;
+    int idx = iy * KEY_HYPOTHESIS + ix;             //何スレッド目か
+
+    if(ix < KEY_HYPOTHESIS && iy < NUM_TRACES)
+        d_model[idx] = HW(Sbox[d_plaintexts[iy] ^ ix]);
 }
+
+__device__ uint8_t HW(uint8_t x)
+{
+    x = x - ((x >> 1) & 0x55555555);
+    x = (x & 0x33333333) + ((x << 2) & 0x33333333);
+
+    return ((x + (x >> 4) & 0xF0F0F0F) * 0x1010101) >> 24;
+}
+
+__global__ void transpose_model(uint8_t *out, uint8_t *in, const int nx, const int ny)
+{
+    unsigned int ix = blockDim.x * blockIdx.x + threadIdx.x;
+    unsigned int iy = blockDim.y * blockIdx.y + threadIdx.y;
+
+    if(ix < nx && iy << ny){
+        out[ix * ny + iy] = in[iy * nx + ix];
+    }
+}
+
+__global__ void correlation(float *d_corr, int8_t *d_trases_t, uint8_t *d_model_t, int T, int D){
+    // T is n_pois, D is n_traces? 
+    // listing 4.4: Computation of the correlation matrix for a first order CPA attack based on [CDOR09].
+    __shared__ float Xs[BLOCKSIZE][BLOCKSIZE];
+    __shared__ float Ys[BLOCKSIZE][BLOCKSIZE];
+
+    int bx = blockIdx.x;
+    int by = blockIdx.y;
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    int xBegin = bx * BLOCKSIZE * D;
+    int yBegin = by * BLOCKSIZE * D;
+    int yEnd = yBegin + D - 1;
+
+    int x, y, k, o;
+    float a1, a2, a3, a4, a5;
+    float avgX, avgY, varX, varY, cov, rho;
+
+    a1 = a2 = a3 = a4 = a5 = 0.0;
+
+    for(y = yBegin, x = xBegin; y <= yEnd; y += BLOCKSIZE, x += BLOCKSIZE){
+        Xs[tx][ty] = d_model_t[x + ty * D + tx];
+        Ys[ty][tx] = d_trases_t[y + ty * D + tx];
+
+        __syncthreads();
+
+        for(k = 0; k < BLOCKSIZE; k++){
+            a1 += Xs[k][tx];
+            a2 += Ys[ty][k];
+            a3 += Xs[k][tx] * Xs[k][tx];
+            a4 += Ys[ty][k] * Ys[ty][k];
+            a5 += Xs[k][tx] * Ys[ty][k];
+        }
+
+        __syncthreads();
+    }
+    
+    avgX = a1 / D;
+    avgY = a2 / D;
+
+    varX = (a3 - avgX * avgX * D) / (D - 1);
+    varY = (a4 - avgY * avgY * D) / (D - 1);
+    cov = (a5 - avgX * avgY * D) / (D - 1);
+
+    rho - cov / sqrtf(varX * varY);
+    o = bx * BLOCKSIZE * T + tx * T + by * BLOCKSIZE + ty;
+
+    d_corr[o] = rho;
+}
+
+__global__ void merge_sums(float *d_centr_sum_t_q1, float *d_centr_sum_1_q1, float *d_mean_t_q1, float *d_mean_1_q1,
+                            float *d_centr_sum_t_q2, float *d_centr_sum_1_q2, float *d_mean_t_q2, float *d_mean_1_q2,
+                            int D, int T, int K, int iteration){
+                                
+    int tidx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float mean_t_q1, mean_1_q1, centr_sum_t_q1, centr_sum_1_q1;
+    float mean_t_q2, mean_1_q2, centr_sum_t_q2, centr_sum_1_q2;
+    float mean_t_q, mean_1_q, centr_sum_t_q, centr_sum_1_q;
+    float delta_1, delta_t, delta_n_1, delta_n_t;
+
+    int n1, n2, n;
+
+    n1 = D * iteration;
+    n2 = D;
+    n = n1 + n2;
+
+    if(tidx < K){
+        centr_sum_1_q1 = d_centr_sum_1_q1[tidx];
+        centr_sum_1_q2 = d_centr_sum_1_q2[tidx];
+
+        mean_1_q1 = d_mean_1_q1[tidx];
+        mean_1_q2 = d_mean_1_q2[tidx];
+
+        delta_1 = mean_1_q2 - mean_1_q1;
+        delta_n_1 = delta_1 / n;
+
+        centr_sum_1_q = centr_sum_1_q1 + centr_sum_1_q2 + n1 * n2 * delta_1 * delta_n_1;
+        d_centr_sum_1_q1[tidx] = centr_sum_1_q;
+
+        mean_1_q = mean_1_q1 + n2 * delta_n_1;
+        d_mean_1_q1[tidx] = mean_1_q;
+    }
+
+    if(tidx < T){
+        centr_sum_t_q1 = d_centr_sum_t_q1[tidx];
+        centr_sum_t_q2 = d_centr_sum_t_q2[tidx];
+
+        mean_t_q1 = d_mean_t_q1[tidx];
+        mean_t_q2 = d_mean_t_q2[tidx];
+
+        delta_t = mean_t_q2 - mean_t_q1;
+        delta_n_t = delta_t / n;
+
+        centr_sum_t_q = centr_sum_t_q1 + centr_sum_t_q2 + n1 * n2 * delta_t * delta_n_t;
+        d_centr_sum_t_q1[tidx] = centr_sum_t_q;
+
+        mean_t_q = mean_t_q1 + n2 * delta_n_t;
+        d_mean_t_q1[tidx] = mean_t_q;
+    }
+}
+
+__global__ void merge_adj_sum(float *d_adj_centr_sum_q1, float *d_mean_l_q1, float *d_mean_t_q1, 
+                            float *d_adj_centr_sum_q2, float *d_mean_l_q2, float *d_mean_t_q2,
+                            int D, int T, int K, int iteration)
+{
+    int tidx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    float mean_t_q1, mean_l_q1, adj_centr_sum_q1;
+    float mean_t_q2, mean_l_q2, adj_centr_sum_q2;
+    float adj_centr_sum_q;
+    float delta_t, delta_l;
+
+    int n1, n2, n, index;
+
+    if(tidx < T){
+        n1 = D * iteration;
+        n2 = D;
+        n = n1 + n2;
+
+        for(int k = 0; k < K; k++){
+            index = k * T + tidx;
+
+            mean_t_q1 = d_mean_t_q1[tidx];
+            mean_t_q2 = d_mean_t_q2[tidx];
+
+            mean_l_q1 = d_mean_l_q1[k];
+            mean_l_q2 = d_mean_l_q2[k];
+
+            adj_centr_sum_q1 = d_adj_centr_sum_q1[index];
+            adj_centr_sum_q2 = d_adj_centr_sum_q2[index];
+
+            delta_l = mean_l_q2 - mean_l_q1;
+            delta_t = mean_t_q2 - mean_t_q1;
+
+            adj_centr_sum_q = adj_centr_sum_q1 + adj_centr_sum_q2 + ((n1 * n2) / n) * delta_t * delta_l;
+            d_adj_centr_sum_q1[index] = adj_centr_sum_q;
+        }
+    }
+}
+
 
 int main(int argc, char **argv){
 
