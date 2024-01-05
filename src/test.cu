@@ -70,8 +70,8 @@ __global__ void correlation(float *d_corr, int8_t *d_trases_t, uint8_t *d_model_
     int tx = threadIdx.x;
     int ty = threadIdx.y;
 
-    int xBegin = bx * BLOCKSIZE * D;
-    int yBegin = by * BLOCKSIZE * D;
+    int xBegin = bx * BLOCKSIZE * D;    // For model matrix, x座標が同じブロックは同じデータになる。
+    int yBegin = by * BLOCKSIZE * D;    // For trace matrix
     int yEnd = yBegin + D - 1;
 
     int x, y, k, o;
@@ -81,6 +81,8 @@ __global__ void correlation(float *d_corr, int8_t *d_trases_t, uint8_t *d_model_
     a1 = a2 = a3 = a4 = a5 = 0.0;
 
     for(y = yBegin, x = xBegin; y <= yEnd; y += BLOCKSIZE, x += BLOCKSIZE){
+        //　Transfer data from the global memory to the shared memory.
+        //　D/32ループですべてのデータをなめる？
         Xs[tx][ty] = d_model_t[x + ty * D + tx];
         Ys[ty][tx] = d_trases_t[y + ty * D + tx];
 
@@ -201,6 +203,27 @@ __global__ void merge_adj_sum(float *d_adj_centr_sum_q1, float *d_mean_l_q1, flo
     }
 }
 
+__global__ void correlation(float *d_corr, float *d_centr_sum_l, float *d_centr_sum_t, float *d_adj_centr_sum, int T, int K)
+{
+    int tidx = blockIdx.x * blockDim.x + threadIdx.x;
+    int tidy = blockIdx.y * blockDim.y + threadIdx.y;
+
+    float adj_centr_sum, centr_sum_l, centr_sum_t, rho;
+
+    int index;
+
+    if(tidx < T && tidy < K)
+    {
+        index = tidy * T + tidx;
+
+        centr_sum_t = d_centr_sum_t[tidx];
+        centr_sum_l = d_centr_sum_l[tidy];
+        adj_centr_sum = d_adj_centr_sum[index];
+
+        rho = adj_centr_sum / sqrt(centr_sum_l * centr_sum_t);
+        d_corr[index] = rho;
+    }
+}
 
 int main(int argc, char **argv){
 
