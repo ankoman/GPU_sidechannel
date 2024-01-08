@@ -1,8 +1,12 @@
 #include<stdio.h>
 #include<H5Cpp.h>
+#include <string>
+#include <fstream>
+#include <sstream>
+#include "my_cuda_get_time.cuh"
 
 #define KEY_HYPOTHESIS 256
-#define NUM_TRACES 1000
+#define NUM_TRACES 10000
 #define BLOCKSIZE 32
 
 typedef struct ascad_metadata {
@@ -13,8 +17,36 @@ typedef struct ascad_metadata {
     unsigned int  desync;
 } ascad_metadata;
 
+__device__ uint8_t HW(uint8_t x)
+{
+    x = x - ((x >> 1) & 0x55555555);
+    x = (x & 0x33333333) + ((x >> 2) & 0x33333333);
+
+    return ((x + (x >> 4) & 0xF0F0F0F) * 0x1010101) >> 24;
+
+    //     static uint8_t HW[] = {
+    //     0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+    //     1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5, 
+    //     1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5, 
+    //     2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6, 
+    //     1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5, 
+    //     2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6, 
+    //     2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6, 
+    //     3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7, 
+    //     1, 2, 2, 3, 2, 3, 3, 4, 2, 3, 3, 4, 3, 4, 4, 5, 
+    //     2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6, 
+    //     2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6, 
+    //     3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7, 
+    //     2, 3, 3, 4, 3, 4, 4, 5, 3, 4, 4, 5, 4, 5, 5, 6, 
+    //     3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7, 
+    //     3, 4, 4, 5, 4, 5, 5, 6, 4, 5, 5, 6, 5, 6, 6, 7, 
+    //     4, 5, 5, 6, 5, 6, 6, 7, 5, 6, 6, 7, 6, 7, 7, 8};
+
+    // return HW[x];
+}
+
 __global__ void create_model(uint8_t *d_model, uint8_t *d_plaintexts){
-    uint8_t Sbox[] = {  
+    static const uint8_t Sbox[] = {  
         0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
         0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
         0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
@@ -33,28 +65,21 @@ __global__ void create_model(uint8_t *d_model, uint8_t *d_plaintexts){
         0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16
         };
     
-    int ix = blockIdx.x * blockDim.x + threadIdx.x;
-    int iy = blockIdx.y * blockDim.y + threadIdx.y;
-    int idx = iy * KEY_HYPOTHESIS + ix;             //何スレッド目か
+    int ix = blockIdx.x * blockDim.x + threadIdx.x; // Key hypothesis = 256 threads
+    int iy = blockIdx.y * blockDim.y + threadIdx.y; // Ptxt index
+    int idx = iy * KEY_HYPOTHESIS + ix;             // Output model index
 
     if(ix < KEY_HYPOTHESIS && iy < NUM_TRACES)
         d_model[idx] = HW(Sbox[d_plaintexts[iy] ^ ix]);
 }
 
-__device__ uint8_t HW(uint8_t x)
-{
-    x = x - ((x >> 1) & 0x55555555);
-    x = (x & 0x33333333) + ((x << 2) & 0x33333333);
 
-    return ((x + (x >> 4) & 0xF0F0F0F) * 0x1010101) >> 24;
-}
-
-__global__ void transpose_model(uint8_t *out, uint8_t *in, const int nx, const int ny)
+__global__ void transpose(uint8_t *out, uint8_t *in, const int nx, const int ny)
 {
     unsigned int ix = blockDim.x * blockIdx.x + threadIdx.x;
     unsigned int iy = blockDim.y * blockIdx.y + threadIdx.y;
 
-    if(ix < nx && iy << ny){
+    if(ix < nx && iy < ny){
         out[ix * ny + iy] = in[iy * nx + ix];
     }
 }
@@ -246,22 +271,52 @@ int main(int argc, char **argv){
 	dataset = group.openDataSet("metadata"); 
     ascad_metadata *metadata = new ascad_metadata [n_traces];
     unsigned char *plaintexts = new unsigned char[n_traces*16];
+    unsigned char *plaintext_1st = new unsigned char[n_traces];
 
     dataset.read(metadata, dataset.getDataType() );
     for(int i=0; i<n_traces; i++){
-        memcpy(plaintexts + 16*i, metadata[i].plaintext, 16);
+        //memcpy(plaintexts + 16*i, metadata[i].plaintext, 16);
+        plaintext_1st[i] = metadata[i].plaintext[0];
     }
 
-    for(int i = 0; i < 8; i++){
-        for(int j = 0; j < 16; j++){
-            printf("%d ", *(plaintexts + 16*i + j));
+    // GPU
+    uint8_t *h_model = new uint8_t[n_traces * KEY_HYPOTHESIS];
+    uint8_t *d_plaintext, *d_model, *d_model_t;
+    cudatimeStamp cutime;
+    dim3 grid(KEY_HYPOTHESIS / 32, (n_traces - 1) / 32 + 1, 1);
+    dim3 block(32, 32, 1);
+
+    cutime.stamp();
+    cudaMalloc((void **)&d_plaintext, sizeof(uint8_t) * n_traces);
+    cudaMalloc((void **)&d_model, sizeof(uint8_t) * n_traces * KEY_HYPOTHESIS);
+    cudaMalloc((void **)&d_model_t, sizeof(uint8_t) * n_traces * KEY_HYPOTHESIS);
+
+    cutime.stamp();
+    cudaMemcpy(d_plaintext, plaintext_1st, sizeof(uint8_t) * n_traces, cudaMemcpyHostToDevice);
+
+    cutime.stamp();
+    create_model<<<grid, block>>>(d_model, d_plaintext);
+    transpose<<<grid, block>>>(d_model_t, d_model, KEY_HYPOTHESIS, n_traces);
+
+    cutime.stamp();
+    cudaMemcpy(h_model, d_model_t, sizeof(uint8_t) * n_traces * KEY_HYPOTHESIS, cudaMemcpyDeviceToHost);
+    cutime.stamp();
+
+    cutime.print();
+
+    // File out
+    std::ofstream ofs_csv_file("./out_t.csv");
+    for(int i = 0; i < KEY_HYPOTHESIS; i++){
+        for(int j = 0; j < n_traces; j ++){
+            ofs_csv_file << (int)h_model[i*n_traces + j]  << ',';
         }
-        printf("\n");
+        ofs_csv_file << std::endl;
     }
 
-    // helloFromGPU<<<1, 10>>>();
-    // cudaDeviceReset();
-    delete traces, metadata;
+    cudaDeviceReset();
+    delete traces, metadata, h_model, plaintext_1st, plaintexts;
     dataset.close();
+    cudaFree(d_plaintext);
+    cudaFree(d_model);
     return 0;
 }

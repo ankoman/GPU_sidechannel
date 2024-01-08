@@ -21,6 +21,8 @@ Sbox = [
 ]
 hw = [bin(n).count("1") for n in range(256)]
 
+print(hw)
+
 list_out = []
 with h5py.File(r'./my_ASCAD.h5', 'r') as f:
     for ptxt in f['Attack_traces']['metadata']['plaintext']:
