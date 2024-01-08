@@ -1,29 +1,23 @@
-CXX=g++
+CXX=clang++
 NVCC=/usr/local/cuda-11.8/bin/nvcc
 INCLUDE_DIR=/usr/include/hdf5/serial/
 #INCLUDE_DIR=../hdf5-1.14.3/hdf5/include
 LIBRARY_DIR=/usr/lib/x86_64-linux-gnu/hdf5/serial/
 #LIBRARY_DIR=../hdf5-1.14.3/hdf5/lib
 LIBS=-lhdf5 -lhdf5_cpp
-CXXFLAGS=-g
-NVCCFLAGS=-g -I$(INCLUDE_DIR) -L$(LIBRARY_DIR) $(LIBS)
+CXXFLAGS=-g 
+NVCCFLAGS=-G -g -I$(INCLUDE_DIR) -L$(LIBRARY_DIR) $(LIBS)
 #LD_LIBRARY_PATH=$(shell printenc LD_LIBRARY_PATH):/usr/local/cuda-11.8/lib64/
 SRCDIR=src
 SRCS=$(wildcard $(SRCDIR)/*.cu)
 OBJDIR=obj
-OBJS=$(subst $(SRCDIR),$(OBJDIR), $(SRCS))
+OBJS=$(subst $(SRCDIR), $(OBJDIR), $(SRCS))
 OBJS:=$(subst .cpp,.o,$(OBJS))
 OBJS:=$(subst .cu,.o,$(OBJS))
 TARGET=test
 
-$(TARGET): $(OBJS)
+$(TARGET): $(SRCS)
 	$(NVCC) $(NVCCFLAGS) $+ -o $@
-
-$(SRCDIR)/%.cpp: $(SRCDIR)/%.cu
-	$(NVCC) $(NVCCFLAGS) --cuda $< -o $@
-
-$(OBJDIR)/%.o: $(SRCDIR)/%.cpp
-	$(CXX) $(CXXFLAGS) $< -c -o $@
 
 clean:
 	rm -rf $(OBJS)
