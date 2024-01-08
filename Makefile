@@ -1,6 +1,6 @@
 CXX=clang++
 NVCC=/usr/local/cuda-11.8/bin/nvcc
-INCLUDE_DIR=-I/usr/include/hdf5/serial/ -I./include
+INCLUDE_DIR=-I/usr/include/hdf5/serial/ -I./inc
 #INCLUDE_DIR=../hdf5-1.14.3/hdf5/include
 LIBRARY_DIR=/usr/lib/x86_64-linux-gnu/hdf5/serial/
 #LIBRARY_DIR=../hdf5-1.14.3/hdf5/lib
