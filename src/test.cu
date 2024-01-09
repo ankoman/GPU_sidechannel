@@ -84,7 +84,7 @@ __global__ void transpose(uint8_t *out, uint8_t *in, const int nx, const int ny)
     }
 }
 
-__global__ void correlation(float *d_corr, int8_t *d_trases_t, uint8_t *d_model_t, int T, int D){
+__global__ void correlation(float *d_corr, uint8_t *d_trases_t, uint8_t *d_model_t, int T, int D){
     // T is n_pois, D is n_traces? 
     // listing 4.4: Computation of the correlation matrix for a first order CPA attack based on [CDOR09].
     __shared__ float Xs[BLOCKSIZE][BLOCKSIZE];
@@ -108,8 +108,8 @@ __global__ void correlation(float *d_corr, int8_t *d_trases_t, uint8_t *d_model_
     for(y = yBegin, x = xBegin; y <= yEnd; y += BLOCKSIZE, x += BLOCKSIZE){
         //　Transfer data from the global memory to the shared memory.
         //　D/32ループですべてのデータをなめる？
-        Xs[tx][ty] = d_model_t[x + ty * D + tx];
-        Ys[ty][tx] = d_trases_t[y + ty * D + tx];
+        Xs[tx][ty] = d_model_t[x + ty * D + tx];    // transpose?
+        Ys[ty][tx] = d_trases_t[y + ty * D + tx];   
 
         __syncthreads();
 
@@ -131,8 +131,9 @@ __global__ void correlation(float *d_corr, int8_t *d_trases_t, uint8_t *d_model_
     varY = (a4 - avgY * avgY * D) / (D - 1);
     cov = (a5 - avgX * avgY * D) / (D - 1);
 
-    rho - cov / sqrtf(varX * varY);
-    o = bx * BLOCKSIZE * T + tx * T + by * BLOCKSIZE + ty;
+    rho = cov / sqrtf(varX * varY);
+    //o = bx * BLOCKSIZE * T + tx * T + by * BLOCKSIZE + ty;
+    o = (by * BLOCKSIZE + ty) * KEY_HYPOTHESIS + bx * BLOCKSIZE + tx;
 
     d_corr[o] = rho;
 }
@@ -264,57 +265,66 @@ int main(int argc, char **argv){
     n_traces = dims[0];
     n_pois = dims[1];
 
-    char *traces = new char [n_traces * n_pois];
+    char *h_traces = new char [n_traces * n_pois];
     printf("Traces dimension: %llu x %llu\n", dims[0], dims[1]);
-    dataset.read( traces, dataset.getDataType() );
+    dataset.read(h_traces, dataset.getDataType() );
 
 	dataset = group.openDataSet("metadata"); 
     ascad_metadata *metadata = new ascad_metadata [n_traces];
-    unsigned char *plaintexts = new unsigned char[n_traces*16];
-    unsigned char *plaintext_1st = new unsigned char[n_traces];
+    unsigned char *h_plaintexts = new unsigned char[n_traces*16];
+    unsigned char *h_plaintext_1st = new unsigned char[n_traces];
 
     dataset.read(metadata, dataset.getDataType() );
     for(int i=0; i<n_traces; i++){
         //memcpy(plaintexts + 16*i, metadata[i].plaintext, 16);
-        plaintext_1st[i] = metadata[i].plaintext[0];
+        h_plaintext_1st[i] = metadata[i].plaintext[0];
     }
 
     // GPU
-    uint8_t *h_model = new uint8_t[n_traces * KEY_HYPOTHESIS];
-    uint8_t *d_plaintext, *d_model, *d_model_t;
+    float *h_corr = new float[n_traces * n_pois];
+    uint8_t *d_plaintext, *d_model, *d_model_t, *d_trace, *d_trace_t;
+    float *d_corr;
     cudatimeStamp cutime;
-    dim3 grid(KEY_HYPOTHESIS / 32, (n_traces - 1) / 32 + 1, 1);
-    dim3 block(32, 32, 1);
+    dim3 model_grid(KEY_HYPOTHESIS / BLOCKSIZE, (n_traces - 1) / BLOCKSIZE + 1, 1);
+    dim3 trace_grid((n_pois - 1) / BLOCKSIZE + 1, (n_traces - 1) / BLOCKSIZE + 1, 1);
+    dim3 corr_grid(KEY_HYPOTHESIS / BLOCKSIZE, (n_pois - 1) / BLOCKSIZE + 1, 1);
+    dim3 block(BLOCKSIZE, BLOCKSIZE, 1);
 
     cutime.stamp();
     cudaMalloc((void **)&d_plaintext, sizeof(uint8_t) * n_traces);
     cudaMalloc((void **)&d_model, sizeof(uint8_t) * n_traces * KEY_HYPOTHESIS);
     cudaMalloc((void **)&d_model_t, sizeof(uint8_t) * n_traces * KEY_HYPOTHESIS);
+    cudaMalloc((void **)&d_trace, sizeof(uint8_t) * n_traces * n_pois);
+    cudaMalloc((void **)&d_trace_t, sizeof(uint8_t) * n_traces * n_pois);
+    cudaMalloc((void **)&d_corr, sizeof(float) * n_pois * KEY_HYPOTHESIS);
 
     cutime.stamp();
-    cudaMemcpy(d_plaintext, plaintext_1st, sizeof(uint8_t) * n_traces, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_plaintext, h_plaintext_1st, sizeof(uint8_t) * n_traces, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_trace, h_traces, sizeof(uint8_t) * n_traces, cudaMemcpyHostToDevice);
 
     cutime.stamp();
-    create_model<<<grid, block>>>(d_model, d_plaintext);
-    transpose<<<grid, block>>>(d_model_t, d_model, KEY_HYPOTHESIS, n_traces);
+    create_model<<<model_grid, block>>>(d_model, d_plaintext);
+    transpose<<<model_grid, block>>>(d_model_t, d_model, KEY_HYPOTHESIS, n_traces);
+    transpose<<<trace_grid, block>>>(d_trace_t, d_trace, n_pois, n_traces);
+    correlation<<<corr_grid, block>>>(d_corr, d_trace_t, d_model_t, n_pois, n_traces);
 
     cutime.stamp();
-    cudaMemcpy(h_model, d_model_t, sizeof(uint8_t) * n_traces * KEY_HYPOTHESIS, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_corr, d_corr, sizeof(float) * n_pois * KEY_HYPOTHESIS, cudaMemcpyDeviceToHost);
     cutime.stamp();
 
     cutime.print();
 
     // File out
-    std::ofstream ofs_csv_file("./out_t.csv");
-    for(int i = 0; i < KEY_HYPOTHESIS; i++){
-        for(int j = 0; j < n_traces; j ++){
-            ofs_csv_file << (int)h_model[i*n_traces + j]  << ',';
+    std::ofstream ofs_csv_file("./out.csv");
+    for(int i = 0; i < n_pois; i++){
+        for(int j = 0; j < KEY_HYPOTHESIS; j ++){
+            ofs_csv_file << (float)h_corr[i*KEY_HYPOTHESIS + j]  << ',';
         }
         ofs_csv_file << std::endl;
     }
 
     cudaDeviceReset();
-    delete traces, metadata, h_model, plaintext_1st, plaintexts;
+    delete h_traces, metadata, h_corr, h_plaintext_1st, h_plaintexts;
     dataset.close();
     cudaFree(d_plaintext);
     cudaFree(d_model);
