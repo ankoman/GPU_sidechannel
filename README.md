@@ -1,5 +1,8 @@
 # GPU_sidechannel
 
+# Usage
+## input
+trace: uint8
 
 # Requirements
 ### hdf5
