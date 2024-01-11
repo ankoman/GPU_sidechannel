@@ -284,6 +284,7 @@ int main(int argc, char **argv){
 
     // GPU
     float *h_corr = new float[n_traces * n_pois];
+    float *max_corr = new float[KEY_HYPOTHESIS]();
     uint8_t *d_plaintext, *d_model, *d_model_t, *d_trace, *d_trace_t;
     float *d_corr;
     cudatimeStamp cutime;
@@ -312,23 +313,50 @@ int main(int argc, char **argv){
 
     cutime.stamp();
     cudaMemcpy(h_corr, d_corr, sizeof(float) * n_pois * KEY_HYPOTHESIS, cudaMemcpyDeviceToHost);
-    cutime.stamp();
 
+    cutime.stamp();
+    // Peak search
+    float corr_t = 0.0;
+    int key_guess;
+    for (int i = 0; i < n_pois; i++){
+        for(int j = 0; j < KEY_HYPOTHESIS; j++){
+            corr_t = abs(h_corr[i*KEY_HYPOTHESIS + j]);
+            if (max_corr[j] < corr_t){
+                max_corr[j] = corr_t;
+            }
+        }
+    }
+    corr_t = 0.0;
+    for(int i = 0; i < KEY_HYPOTHESIS; i++){
+        if(corr_t < max_corr[i]){
+            corr_t = max_corr[i];
+            key_guess = i;
+        }
+    }
+    printf("Key guess: %d\n", key_guess);
+
+    // // File out
+    // std::ofstream ofs_csv_file("./out.csv");
+    // for(int i = 0; i < n_pois; i++){
+    //     for(int j = 0; j < KEY_HYPOTHESIS; j ++){
+    //         ofs_csv_file << (float)h_corr[i*KEY_HYPOTHESIS + j]  << ',';
+    //     }
+    //     ofs_csv_file << std::endl;
+    // }
+
+    cutime.stamp();
     cutime.print();
 
-    // File out
-    std::ofstream ofs_csv_file("./out.csv");
-    for(int i = 0; i < n_pois; i++){
-        for(int j = 0; j < KEY_HYPOTHESIS; j ++){
-            ofs_csv_file << (float)h_corr[i*KEY_HYPOTHESIS + j]  << ',';
-        }
-        ofs_csv_file << std::endl;
-    }
 
     cudaDeviceReset();
     delete h_traces, metadata, h_corr, h_plaintext_1st, h_plaintexts;
     dataset.close();
     cudaFree(d_plaintext);
     cudaFree(d_model);
+    cudaFree(d_model_t);
+    cudaFree(d_trace);
+    cudaFree(d_trace_t);
+    cudaFree(d_corr);
+
     return 0;
 }
