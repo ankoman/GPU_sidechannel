@@ -99,13 +99,13 @@ __global__ void correlation(float *d_corr, uint8_t *d_trases_t, uint8_t *d_model
     int yBegin = by * BLOCKSIZE * D;    // For trace matrix
     int yEnd = yBegin + D - 1;
 
-    int x, y, k, o;
+    int x, y, k, o, i;
     float a1, a2, a3, a4, a5;
     float avgX, avgY, varX, varY, cov, rho;
 
     a1 = a2 = a3 = a4 = a5 = 0.0;
 
-    for(y = yBegin, x = xBegin; y <= yEnd; y += BLOCKSIZE, x += BLOCKSIZE){
+    for(i = 0, y = yBegin, x = xBegin; y <= yEnd; y += BLOCKSIZE, x += BLOCKSIZE, i += BLOCKSIZE){
         //　Transfer data from the global memory to the shared memory.
         //　D/32ループですべてのデータをなめる？
         Xs[tx][ty] = d_model_t[x + ty * D + tx];    // transpose?
@@ -114,11 +114,13 @@ __global__ void correlation(float *d_corr, uint8_t *d_trases_t, uint8_t *d_model
         __syncthreads();
 
         for(k = 0; k < BLOCKSIZE; k++){
-            a1 += Xs[k][tx];
-            a2 += Ys[ty][k];
-            a3 += Xs[k][tx] * Xs[k][tx];
-            a4 += Ys[ty][k] * Ys[ty][k];
-            a5 += Xs[k][tx] * Ys[ty][k];
+            if(i + k < D){
+                a1 += Xs[k][tx];
+                a2 += Ys[ty][k];
+                a3 += Xs[k][tx] * Xs[k][tx];
+                a4 += Ys[ty][k] * Ys[ty][k];
+                a5 += Xs[k][tx] * Ys[ty][k];
+            }
         }
 
         __syncthreads();
@@ -253,7 +255,7 @@ __global__ void correlation(float *d_corr, float *d_centr_sum_l, float *d_centr_
 
 int main(int argc, char **argv){
 
-	H5::H5File file("./my_ASCAD.h5", H5F_ACC_RDONLY);
+	H5::H5File file("../SideChannel/work/my_pinata_aes.h5", H5F_ACC_RDONLY);
     H5::Group group = file.openGroup("Attack_traces"); 
 	H5::DataSet dataset = group.openDataSet("traces"); 
 	H5::DataSpace dataspace = dataset.getSpace();
@@ -300,7 +302,7 @@ int main(int argc, char **argv){
 
     cutime.stamp();
     cudaMemcpy(d_plaintext, h_plaintext_1st, sizeof(uint8_t) * n_traces, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_trace, h_traces, sizeof(uint8_t) * n_traces, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_trace, h_traces, sizeof(uint8_t) * n_traces * n_pois, cudaMemcpyHostToDevice);
 
     cutime.stamp();
     create_model<<<model_grid, block>>>(d_model, d_plaintext);
